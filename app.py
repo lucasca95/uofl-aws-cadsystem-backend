@@ -1,13 +1,12 @@
 try:
     import bcrypt as bb
-    import boto3, datetime
     from dotenv import load_dotenv
     from flask import Flask, request, send_file
     from flask_cors import CORS
     from flask_mail import Mail, Message
-    import jwt, os, sys, pdb, pymysql, sys
+    from fpdf import FPDF
+    import boto3, datetime, jwt, os, sys, pdb, pymysql, sys, zipfile
     from time import sleep
-    import zipfile
 except Exception as ee:
     print(f'Error when importing python dependencies', file=sys.stderr)
     print(f'ErrorMsg: {ee}', file=sys.stderr)
@@ -127,7 +126,7 @@ while (not db_connected):
 def api_home():
     # return app.send_static_file('index.html')
     connection = get_mysql_connection()
-    if (connection):
+    if (connection.open):
         print(f'In Home: We are connected to the db',file=sys.stderr)
         print(f'Connection open is {connection.open}',file=sys.stderr)
     return {
@@ -147,7 +146,7 @@ def api_login():
             if (not user_email) or (not user_password):
                 raise Exception('Failed to get user data')
 
-            print(connection, file=sys.stderr)
+            print(f'Line 150: connection open is {connection.open}', file=sys.stderr)
             res = None
             with connection.cursor() as cursor:
                 sql = """
@@ -160,7 +159,9 @@ def api_login():
                     """
                 cursor.execute(sql, [user_email])
                 res = cursor.fetchone()
+                sleep(0.1)
             connection.commit()
+            sleep(0.1)
 
             if (res):
                 print(f'We got a user that matches the email', file=sys.stderr)
@@ -179,7 +180,7 @@ def api_login():
                         'token': token
                     }
                 else:
-                    print(f'Password is incorrect', file=sys.stderr)        
+                    print(f'Password is incorrect', file=sys.stderr)
             print(f'Logging failed', file=sys.stderr)
 
             return {
@@ -187,7 +188,7 @@ def api_login():
                 'message': 'Credentials are not valid'
             }
         except Exception as ee:
-            print(f'Error: {ee}')
+            print(f'Error: {ee}', file=sys.stderr)
             return {
                 'status': 400,
                 'message': f'Error: {ee}'
@@ -251,10 +252,10 @@ def api_upload_images():
         }
         try:
             user_email = request.values.get('userEmail')
-            print(f'Line 252: we received user_email={user_email}', file=sys.stderr)
+            print(f'Line 256: we received user_email={user_email}', file=sys.stderr)
             
             if not user_email:
-                print(f'Line 254: we failed to ger user data', file=sys.stderr)
+                print(f'Line 259: we failed to ger user data', file=sys.stderr)
                 raise Exception('Failed to get user data')
             
             if (request.files):
@@ -279,7 +280,7 @@ def api_upload_images():
                 ######
                 # Save image into S3 AWS bucket
                 ######
-                print(f'Line 281: We are about to upload the file to the S3', file=sys.stderr)
+                print(f'Line 284: We are about to upload the file to the S3', file=sys.stderr)
                 try:
                     s3.upload_fileobj(
                         uploaded_file,
@@ -292,7 +293,7 @@ def api_upload_images():
                     )
 
                 except Exception as ee:
-                    print(f'Line 294: smth went wrong and we need to delete the last inserted image', file=sys.stderr)
+                    print(f'Line 297: smth went wrong and we need to delete the last inserted image', file=sys.stderr)
                     if (ret['code'] != -1):
                         with connection.cursor() as cursor:
                             sql = """DELETE FROM cadsystemdb.IMAGE WHERE id=%s"""
@@ -323,7 +324,7 @@ def retrieve_image():
     if request.method == 'POST':
         try:
             connection = get_mysql_connection()
-            print('Line 319: We got good connection with the DB', file=sys.stderr)
+            print('Line 328: We got good connection with the DB', file=sys.stderr)
             ret = {
                 'status': 403,
                 'message' : "Image not found",
@@ -331,8 +332,7 @@ def retrieve_image():
             }
             imgcode = request.form['imgcode']
             user_email = request.form['user_email']
-            print(f'Line 326: Imgcode: is {imgcode}, by user {user_email}', file=sys.stderr)
-            # sleep(3)
+            print(f'Line 336: Imgcode: is {imgcode}, by user {user_email}', file=sys.stderr)
             res = None
             # search for the file in the database
             with connection.cursor() as cursor:
@@ -344,32 +344,93 @@ def retrieve_image():
                 res = cursor.fetchone()
                 print('TENEMOS ALGO EN RES', file=sys.stderr)
                 print(res, file=sys.stderr)
-                # sleep(3)
             connection.commit()
 
             # if it does NOT exist
             if (not res):
-                # sleep(3)
                 print(f"\nRequested file id does not exist in database\n", file=sys.stderr)
                 # return ret
-            # sleep(3)
-            print(f'res: {res}', file=sys.stderr)
 
             # if exists
             # find it in bucket and retrieve
-            # sleep(3)
-            s3.download_file(BUCKET_NAME_DONE, f"{user_email}/{imgcode}_{res['name']}", res['name'])
-            zf = zipfile.ZipFile('download.zip', 'w', zipfile.ZIP_DEFLATED)
-            zf.write(res['name'])
-            zf.close()
-            # pdb.set_trace()
+            name = res['name'].split('.')[0]
+            extension = res['name'].split('.')[1]
+            
+            s3_file_name = f"{user_email}/{imgcode}_{name}.{extension}"
+            host_file_name = f'{name}.{extension}'
+            s3.download_file(BUCKET_NAME_DONE, s3_file_name, host_file_name)
+            
+            s3_file_name = f"{user_email}/{imgcode}_{name}_countour.{extension}"
+            host_file_name = f'{name}_countour.{extension}'
+            s3.download_file(BUCKET_NAME_DONE, s3_file_name, host_file_name)
+            
+            s3_file_name = f"{user_email}/{imgcode}_{name}_detected.{extension}"
+            host_file_name = f'{name}_detected.{extension}'
+            s3.download_file(BUCKET_NAME_DONE, s3_file_name, host_file_name)
+            
+            s3_file_name = f"{user_email}/{imgcode}_{name}_segmented.{extension}"
+            host_file_name = f'{name}_segmented.{extension}'
+            s3.download_file(BUCKET_NAME_DONE, s3_file_name, host_file_name)
+            
+            s3_file_name = f"{user_email}/{imgcode}_{name}_with_bounding_box.{extension}"
+            host_file_name = f'{name}_with_bounding_box.{extension}'
+            s3.download_file(BUCKET_NAME_DONE, s3_file_name, host_file_name)
+            
+            pdf = FPDF(format='A4')
+            pdf.add_page()
+            pdf.set_font('Helvetica', 'B', 35)
+            initialX = 10
+            initialY = 10
+            w = 90
+            padding = 20
+            pdf.cell(
+                initialX,
+                initialY,
+                'Results report'
+            )
+            pdf.set_y(pdf.get_y()+padding)
+            filename = f'{name}'
+
+            pdf.image(f"{filename}_detected.{extension}", x=pdf.get_x(), y=pdf.get_y(), w=w)
+            pdf.set_y(pdf.get_y()+w+5)
+            pdf.image(f"{filename}_countour.{extension}", x=pdf.get_x(), y=pdf.get_y(), w=w)
+            pdf.set_x(25);pdf.set_y(padding+initialY)
+            pdf.set_x(pdf.get_x()+w+10)
+            pdf.image(f"{filename}_segmented.{extension}", x=pdf.get_x(), y=pdf.get_y(), w=w)
+            pdf.set_y(pdf.get_y()+w+5)
+            pdf.set_x(pdf.get_x()+w+10)
+            pdf.image(f"{filename}_with_bounding_box.{extension}", x=pdf.get_x(), y=pdf.get_y(), w=w)
+
+            pdf.set_font('Helvetica', '', 15)
+            pdf.set_x(initialX)
+            pdf.set_y(pdf.get_y()+w+7)
+            # pdf.multi_cell(0, 8, f"Results presented below\n   #Request: \n   Prediction: \n   Detection: \n   Pathology: \n   BIRADs: \n   Shape: ")
+            pdf.multi_cell(0, 8, f"#Request: {res['id']}\nPrediction: {res['prediction_level']}\nDetection: {res['detection']}\nPathology: {res['pathology']}\nBIRADs: {res['birads_score']}\nShape: {res['shape']}")
+
+            pdf.output('results.pdf', 'F')
+
             return send_file(
-                'download.zip', 
-                mimetype = 'zip', 
-                # download_name=f'downloads.zip', 
-                as_attachment=True,
-                last_modified=0
-                )
+                'results.pdf',
+                mimetype = 'pdf',
+                as_attachment = False,
+                last_modified = 0
+            )
+
+            # zf = zipfile.ZipFile('download.zip', 'w', zipfile.ZIP_DEFLATED)
+            # zf.write(f'{name}.{extension}')
+            # zf.write(f'{name}_countour.{extension}')
+            # zf.write(f'{name}_detected.{extension}')
+            # zf.write(f'{name}_segmented.{extension}')
+            # zf.write(f'{name}_with_bounding_box.{extension}')
+            # zf.close()
+            # # pdb.set_trace()
+            # return send_file(
+            #     'download.zip', 
+            #     mimetype = 'zip', 
+            #     # download_name=f'downloads.zip', 
+            #     as_attachment=True,
+            #     last_modified=0
+            #     )
         except Exception as ee:
             print(f'Error: {ee}', file=sys.stderr)
             return None
