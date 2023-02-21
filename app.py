@@ -509,7 +509,7 @@ def api_register():
                     ],
                     html=f"""
                         <h1>Email confirmation link</h1>
-                        <p>Please, click <a href="http://localhost:3000/verify/{email_token}/{user_email}">HERE</a> to confirm your email address.</p>
+                        <p>Please, click <a href="{FRONTEND_URL}verify/{email_token}/{user_email}">HERE</a> to confirm your email address.</p>
                     """
                 )
                 mail.send(msg)
