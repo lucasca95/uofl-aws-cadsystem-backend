@@ -1,12 +1,13 @@
 try:
     import bcrypt as bb
+    import boto3, datetime, jwt, os, sys, pdb, pymysql, sys, zipfile
     from dotenv import load_dotenv
     from flask import Flask, request, send_file
     from flask_cors import CORS
     from flask_mail import Mail, Message
     from fpdf import FPDF
     from itsdangerous import URLSafeTimedSerializer, SignatureExpired
-    import boto3, datetime, jwt, os, sys, pdb, pymysql, sys, zipfile
+    from pymysqlpool.pool import Pool
     from time import sleep
 except Exception as ee:
     print(f'Error when importing python dependencies', file=sys.stderr)
@@ -19,41 +20,12 @@ load_dotenv()
 db_connected = False
 connection = None
 
-def get_mysql_connection():
-    global connection
-    global db_connected
-    if (connection):
-        print(f'We already have a connection stablished', file=sys.stderr)
-        db_connected = True
-    else:
-        try:
-            connection = pymysql.connect(
-                host=DB_HOST,
-                user=DB_USER,
-                password=DB_PASSWORD,
-                database=DB_NAME,
-                charset='utf8mb4',
-                cursorclass=pymysql.cursors.DictCursor
-            )
-            db_connected = True
-            print(f'We are now connected to the DB', file=sys.stderr)
-        except Exception as ee:
-            db_connected = False
-            print(f'\nError when trying to connect to db: {ee}', file=sys.stderr)
-            sleep(1)
-    return connection
 
 # =============================================================================
 #   Flask app declaration and config setup
 # =============================================================================
 app = Flask(__name__, static_folder='./react_server/build', static_url_path='/')
 app.config["SECRET_KEY"] = 'jv5(78$62-hr+8==+kn4%r*(9g)fubx&&i=3ewc9p*tnkt6u$h'
-# app.config["MAIL_SERVER"] = 'smtp.mail.yahoo.com'
-# app.config["MAIL_PORT"] = 465
-# app.config["MAIL_USE_SSL"] = True
-# app.config["MAIL_USE_TLS"] = False
-# app.config["MAIL_USERNAME"] = os.getenv("MAIL_USERNAME")
-# app.config["MAIL_PASSWORD"] = os.getenv("MAIL_PASSWORD")
 CORS(app)
 url_sts = URLSafeTimedSerializer(app.config["SECRET_KEY"])
 
@@ -124,11 +96,16 @@ except Exception as ee:
     print(f'ErrorMsg: {ee}', file=sys.stderr)
 
 # =============================================================================
-#   Connection with DB
+#   Connection with Database
 # =============================================================================
-
-while (not db_connected):
-    connection = get_mysql_connection()
+connection_pool = Pool(
+    host=DB_HOST,
+    user=DB_USER,
+    password=DB_PASSWORD,
+    db=DB_NAME,
+    autocommit=True
+)
+connection_pool.init()
 
 # =============================================================================
 #   Routes behavior
@@ -136,10 +113,6 @@ while (not db_connected):
 @app.route(routes['api_home'], methods=['GET'])
 def api_home():
     # return app.send_static_file('index.html')
-    connection = get_mysql_connection()
-    if (connection.open):
-        print(f'In Home: We are connected to the db',file=sys.stderr)
-        print(f'Connection open is {connection.open}',file=sys.stderr)
     return {
         "status": 200,
         "message": "Server up and running"
@@ -148,7 +121,7 @@ def api_home():
 @app.route(routes['api_login'], methods=['POST'])
 def api_login():
     if request.method == 'POST':
-        connection = get_mysql_connection()
+        connection = connection_pool.get_conn()
         try:
             user_email = request.json.get('userEmail')
             user_password = request.json.get('userPassword')
@@ -157,7 +130,7 @@ def api_login():
             if (not user_email) or (not user_password):
                 raise Exception('Failed to get user data')
 
-            print(f'Line 152: connection open is {connection.open}', file=sys.stderr)
+            print(f'Line 133: connection open is {connection.open}', file=sys.stderr)
             res = None
             with connection.cursor() as cursor:
                 sql = """
@@ -171,7 +144,7 @@ def api_login():
                 cursor.execute(sql, [user_email])
                 res = cursor.fetchone()
                 sleep(0.1)
-            connection.commit()
+            connection_pool.release(connection)
             sleep(0.1)
 
             if (res):
@@ -208,7 +181,7 @@ def api_login():
 @app.route(routes['api_images'], methods=['POST'])
 def api_images():
     if request.method == 'POST':
-        connection = get_mysql_connection()
+        connection = connection_pool.get_conn()
         try:
             user_email = request.json.get('userEmail')
             if not user_email:
@@ -237,7 +210,7 @@ def api_images():
                             'biradsScore': elem['birads_score'],
                             'shape': elem['shape']
                         })
-            connection.commit()
+            connection_pool.release(connection)
             print('Got images from DB')
             return {
                 'status': 200,
@@ -253,7 +226,7 @@ def api_images():
 @app.route(routes['api_upload_image'], methods=['POST'])
 def api_upload_images():
     if request.method == 'POST':
-        connection = get_mysql_connection()
+        connection = connection_pool.get_conn()
         print(f'Connection after function', file=sys.stderr)
         print(connection, file=sys.stderr)
         ret = {
@@ -286,7 +259,7 @@ def api_upload_images():
                         """
                         cursor.execute(sql, [uploaded_file.filename, user_email])
                         ret['code'] = cursor.lastrowid
-                connection.commit()
+                connection_pool.release(connection)
 
                 ######
                 # Save image into S3 AWS bucket
@@ -310,7 +283,7 @@ def api_upload_images():
                             sql = """DELETE FROM cadsystemdb.IMAGE WHERE id=%s"""
                             cursor.execute(sql, [str(ret['code'])])
                             ret['code'] = cursor.lastrowid
-                        connection.commit()
+                        connection_pool.release(connection)
                     ret = {
                         'status': 403,
                         'message' : "Error when saving image in S3 bucket"
@@ -329,7 +302,7 @@ def api_upload_images():
 def retrieve_image():
     if request.method == 'POST':
         try:
-            connection = get_mysql_connection()
+            connection = connection_pool.get_conn()
             print('Line 328: We got good connection with the DB', file=sys.stderr)
             ret = {
                 'status': 403,
@@ -350,7 +323,7 @@ def retrieve_image():
                 res = cursor.fetchone()
                 print('TENEMOS ALGO EN RES', file=sys.stderr)
                 print(res, file=sys.stderr)
-            connection.commit()
+            connection_pool.release(connection)
 
             # if it does NOT exist
             if (not res):
@@ -444,7 +417,7 @@ def retrieve_image():
 @app.route(routes['api_register'], methods=['POST'])
 def api_register():
     if request.method == 'POST':
-        connection = get_mysql_connection()
+        connection = connection_pool.get_conn()
         try:
             user_name = request.json.get('userFirstName')
             user_lastname = request.json.get('userLastName')
@@ -496,7 +469,7 @@ def api_register():
                     res = cursor.fetchone()
 
                 sleep(0.1)
-            connection.commit()
+            connection_pool.release(connection)
             ######
             # Send Email
             ######
@@ -509,7 +482,7 @@ def api_register():
                     ],
                     html=f"""
                         <h1>Email confirmation link</h1>
-                        <p>Please, click <a href="{FRONTEND_URL}verify/{email_token}/{user_email}">HERE</a> to confirm your email address.</p>
+                        <p>Please, click <a href="{FRONTEND_URL}#/verify/{email_token}/{user_email}">HERE</a> to confirm your email address.</p>
                     """
                 )
                 mail.send(msg)
@@ -526,6 +499,8 @@ def api_register():
 @app.route(routes['api_email_validation'], methods=['POST'])
 def api_email_validation():
     if request.method == 'POST':
+        print('\nEntramos en email validation')
+        connection = connection_pool.get_conn()
         user_email = str(request.json.get('email'))
         try:
             with connection.cursor() as cursor:
@@ -543,7 +518,7 @@ def api_email_validation():
                     }
                 # From this point on, we know the user does exist
                 sleep(0.1)
-            connection.commit()
+            connection_pool.release(connection)
         except Exception as ee:
             print(f'Error: {ee}', file=sys.stderr)
 
@@ -551,7 +526,9 @@ def api_email_validation():
         valid_time_window = 60*60*24 # seconds
 
         print(f'Email: {user_email}\nToken: {user_token}', file=sys.stderr)
+
         try:
+            connection = connection_pool.get_conn()
             user_email = url_sts.loads(user_token, salt='UofLEmailToken', max_age=valid_time_window)
             with connection.cursor() as cursor:
                 sql = """
@@ -561,7 +538,7 @@ def api_email_validation():
                     """
                 cursor.execute(sql, [user_email])
                 sleep(0.1)
-            connection.commit()
+            connection_pool.release(connection)
             print('\nToken success!', file=sys.stderr)
 
         except SignatureExpired as ee:
@@ -579,7 +556,7 @@ def api_email_validation():
                     ],
                     html=f"""
                         <h1>Email confirmation link</h1>
-                        <p>Your last token expired. Please, click <a href="{FRONTEND_URL}verify/{email_token}/{user_email}">HERE</a> to confirm your email address.</p>
+                        <p>Your last token expired. Please, click <a href="{FRONTEND_URL}#/verify/{email_token}/{user_email}">HERE</a> to confirm your email address.</p>
                     """
                 )
                 mail.send(msg)
